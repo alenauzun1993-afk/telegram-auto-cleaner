@@ -5,6 +5,7 @@ from datetime import date
 from collections import defaultdict
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Лимиты сообщений в день для топиков {topic_id: max_messages}
 TOPIC_LIMITS = {
     5: 2,  # Барахолка
-    3: 1,  # Вторая тема (ID: 3)
+    3: 1,  # Вторая тема
     7: 1   # Недвижимость
 }
 
@@ -29,7 +30,6 @@ dp = Dispatcher()
 
 @dp.message()
 async def handle_message(message: Message):
-    # Пропускаем сервисные сообщения Telegram и авторепосты
     if not message.from_user or message.is_automatic_forward:
         return
 
@@ -37,40 +37,50 @@ async def handle_message(message: Message):
     user_id = message.from_user.id
     today_str = date.today().isoformat()
 
-    # 1. Проверка суточного лимита сообщений
+    # 1. Проверка суточного лимита
     if topic_id in TOPIC_LIMITS:
         max_allowed = TOPIC_LIMITS[topic_id]
         key = (user_id, topic_id, today_str)
         
         if user_message_counts[key] >= max_allowed:
-            # Превышен лимит — мгновенно удаляем сообщение
             try:
                 await message.delete()
-                # Отправляем временное предупреждение
                 warning = await message.answer(
                     f"⚠️ {message.from_user.mention_html()}, лимит сообщений на сегодня в этом топике ({max_allowed} в день) исчерпан. Сообщение удалено.",
                     parse_mode="HTML"
                 )
-                # Удаляем предупреждение через 12 секунд
                 await asyncio.sleep(12)
                 await warning.delete()
             except Exception as e:
-                logging.error(f"Ошибка при удалении превышенного сообщения: {e}")
+                logging.error(f"Ошибка при удалении: {e}")
             return
         else:
-            # Лимит не превышен — увеличиваем счетчик пользователя на сегодня
             user_message_counts[key] += 1
 
-    # 2. Автоудаление через 48 часов (для Барахолки)
+    # 2. Автоудаление через 48 часов
     if topic_id in CLEANER_TOPICS:
         await asyncio.sleep(DELETE_DELAY)
         try:
             await message.delete()
-            logging.info(f"Удалено сообщение {message.message_id} из топика {topic_id} по истечении 48 часов")
+            logging.info(f"Удалено сообщение {message.message_id} из топика {topic_id}")
         except Exception as e:
             logging.error(f"Не удалось удалить сообщение по таймеру: {e}")
 
+# Микро веб-сервер для удержания порта на Render (Free Web Service)
+async def handle_web(request):
+    return web.Response(text="Bot is active!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_web)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
